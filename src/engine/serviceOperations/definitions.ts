@@ -1,0 +1,72 @@
+import type { ProtocolType } from '../../types/index.ts';
+import type { OperationSettings } from './types.ts';
+export interface OperationDefinition {
+  name: string; actions: string[]; protocol: ProtocolType; port: number; iam: boolean; source: string;
+  resource: Record<string, unknown>; request: Record<string, unknown>; scope: string;
+  /** Private VPC endpoint that also authorizes the caller's role when resource.accessPolicy is 'iam' (OpenSearch VPC domain). */
+  privateIam?: boolean;
+  /** Extra route rule for regional endpoints (e.g. a graph with public connectivity disabled). Returns a denial reason. */
+  routeCheck?: (resource: Record<string, any>, route: { outcome: string; via?: string }) => string | undefined;
+  /** Seed this example on node creation so a drawn caller can run it immediately (visible, editable settings). */
+  seedOnCreate?: boolean;
+}
+export const OPERATION_CALLERS = ['ec2', 'lambda', 'ecs', 'fargate'];
+export const SERVICE_OPERATIONS: Record<string, OperationDefinition> = {
+  sns: { name: 'SNS', actions: ['sns:Publish'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/sns/latest/api/API_Publish.html', resource: { topicType: 'standard', MaximumMessageSize: 262144 }, request: { Message: 'Training notification' }, scope: 'Standard-topic publish and existing SQS subscription delivery. FIFO/SMS/mobile endpoints are excluded.' },
+  rds: { name: 'RDS', actions: ['Connect'], protocol: 'SQL', port: 5432, iam: false,
+    source: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_CommonTasks.Connect.html', resource: { engine: 'postgres', port: 5432, status: 'available', credentialsValid: true }, request: {}, scope: 'Private SQL connection and authored credential-validity input; SQL execution and IAM DB auth are excluded. No instant failover is inferred.' },
+  dynamodb: { name: 'DynamoDB', actions: ['dynamodb:PutItem', 'dynamodb:GetItem'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutItem.html', resource: { partitionKey: 'id', status: 'ACTIVE' }, request: { Item: { id: { S: 'order-1' }, state: { S: 'new' } }, Key: { id: { S: 'order-1' } }, ConsistentRead: true }, scope: 'Single string partition key, scalar S/N/BOOL attributes, deterministic local writes and strongly consistent reads. Indexes/transactions/expressions/eventual-read timing excluded.' },
+  neptune: { name: 'Neptune', actions: ['Connect'], protocol: 'HTTPS', port: 8182, iam: false,
+    source: 'https://docs.aws.amazon.com/neptune/latest/userguide/access-graph-opencypher-queries.html', resource: { port: 8182, status: 'available', iamAuthentication: false }, request: {}, scope: 'Private HTTPS endpoint connectivity only; no graph query execution. IAM-enabled and public endpoints are excluded.' },
+  redshift: { name: 'Redshift', actions: ['Connect'], protocol: 'SQL', port: 5439, iam: false,
+    source: 'https://docs.aws.amazon.com/redshift/latest/mgmt/connecting-to-cluster.html', resource: { port: 5439, status: 'available', credentialsValid: true }, request: {}, scope: 'Provisioned private cluster SQL connection; paused clusters do not accept connections. SQL execution/Serverless/Data API excluded.' },
+  kinesis: { name: 'Kinesis Data Streams', actions: ['kinesis:PutRecord'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/kinesis/latest/APIReference/API_PutRecord.html', resource: { status: 'ACTIVE', distribution: 'USER_PARTITION_KEY' }, request: { PartitionKey: 'orders', Data: 'training record' }, scope: 'Single record with a user partition key and UTF-8 teaching payload. Record limit 10 MiB including key. Shard hashing, throughput, consumers and retention scheduling excluded.' },
+  eventbridge: { name: 'EventBridge', actions: ['events:PutEvents'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_PutEvents.html', resource: { exists: true }, request: { Entries: [{ Source: 'training.orders', DetailType: 'OrderCreated', Detail: '{"id":"order-1"}' }] }, scope: '1–10 custom events, per-entry results and ingestion storage only; rules/targets/retries/replay are excluded. Ingestion success does not promise delivery.' },
+  elasticache: { name: 'ElastiCache', actions: ['SET', 'GET'], protocol: 'TCP', port: 6379, iam: false,
+    source: 'https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/GettingStarted.ConnectToCache.html', resource: { engine: 'redis', port: 6379, status: 'available', credentialsValid: true }, request: { key: 'order-1', value: 'cached result' }, scope: 'Private Redis OSS string GET/SET only. Credential validity is an authored teaching input. TLS negotiation, IAM auth, TTL, clustering, Memcached and automatic failover excluded.' },
+  cloudwatch: { name: 'CloudWatch', actions: ['cloudwatch:PutMetricData'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricData.html', resource: {}, request: { Namespace: 'Training/Orders', MetricData: [{ MetricName: 'Requests', Value: 1 }] }, scope: 'Scalar custom metric ingestion only; no immediate alarm evaluation or metric-query/visibility timing. Existing alarm exercise remains separate.' },
+  kms: { name: 'KMS', actions: ['kms:DescribeKey'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/kms/latest/APIReference/API_DescribeKey.html', resource: { KeyId: 'training-key', KeyState: 'Enabled', KeyUsage: 'ENCRYPT_DECRYPT', keyPolicy: { id: 'training-direct-grant', kind: 'resource', statements: [{ effect: 'Allow', principals: ['*'], actions: ['kms:DescribeKey', 'kms:Decrypt'], resources: ['*'] }] } }, request: {}, scope: 'Key metadata, including disabled key metadata; identity and explicit direct-grant key policy both checked. Delegated/account-root key policies, cryptography, grants and cross-account use excluded.' },
+  acm: { name: 'Certificate Manager', actions: ['acm:DescribeCertificate'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/acm/latest/APIReference/API_DescribeCertificate.html', resource: { CertificateArn: 'arn:aws:acm:us-east-1:000000000000:certificate/00000000-0000-0000-0000-000000000001', DomainName: 'training.example.com', Status: 'PENDING_VALIDATION' }, request: {}, scope: 'Certificate metadata only; PENDING_VALIDATION does not become ISSUED automatically. Request/renewal, DNS validation and listener attachment/TLS termination excluded.' },
+  // Database services (sources verified 2026-11-08; specs docs/behavior/<id>.md).
+  aurora: { name: 'Aurora', actions: ['Connect'], protocol: 'SQL', port: 5432, iam: false,
+    source: 'https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.CreateInstance.html', resource: { engine: 'aurora-postgresql', port: 5432, status: 'available', credentialsValid: true }, request: {}, scope: 'Private cluster (writer) endpoint SQL connection with authored credential validity; SQL execution, reader/custom endpoints and IAM DB auth are excluded.' },
+  aurora_serverless: { name: 'Aurora Serverless v2', actions: ['Connect'], protocol: 'SQL', port: 5432, iam: false, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2-auto-pause.html', resource: { engine: 'aurora-postgresql', port: 5432, status: 'available', minCapacityAcu: 0.5, paused: false, credentialsValid: true }, request: {}, scope: 'Private SQL connection; with minimum capacity 0 ACU a paused instance resumes on connection (about 15 s). Capacity scaling, SQL execution and IAM DB auth are excluded.' },
+  rds_proxy: { name: 'RDS Proxy', actions: ['Connect'], protocol: 'SQL', port: 5432, iam: false, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.html', resource: { engineFamily: 'POSTGRESQL', port: 5432, status: 'available', credentialsValid: true }, request: {}, scope: 'Default read/write endpoint: proxy role reads the connected Secrets Manager secret, then connects to the connected writer database. Pool sizing, pinning, read-only endpoints and end-to-end IAM auth are excluded.' },
+  aurora_dsql: { name: 'Aurora DSQL', actions: ['dsql:DbConnect', 'dsql:DbConnectAdmin'], protocol: 'SQL', port: 5432, iam: true, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/aurora-dsql/latest/userguide/authentication-authorization.html', resource: { status: 'ACTIVE' }, request: {}, scope: 'IAM authentication-token connection to the regional endpoint (TLS required). Only ACTIVE clusters are modeled; SQL execution and multi-Region clusters are excluded.' },
+  documentdb: { name: 'DocumentDB', actions: ['Connect'], protocol: 'TCP', port: 27017, iam: false, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/documentdb/latest/developerguide/connect-from-outside-a-vpc.html', resource: { port: 27017, status: 'available', tls: true, credentialsValid: true }, request: {}, scope: 'Private same-VPC connection with authored credential validity; MongoDB commands, IAM (MONGODB-AWS) auth and elastic-cluster specifics are excluded.' },
+  memorydb: { name: 'MemoryDB', actions: ['SET', 'GET'], protocol: 'TCP', port: 6379, iam: false, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/memorydb/latest/devguide/getting-started.html', resource: { port: 6379, status: 'available', credentialsValid: true }, request: { key: 'order-1', value: 'cached result' }, scope: 'Private Valkey/Redis OSS string GET/SET with ACL credential validity; IAM auth (memorydb:Connect) and durability internals are excluded.' },
+  elasticache_serverless: { name: 'ElastiCache Serverless', actions: ['SET', 'GET'], protocol: 'TCP', port: 6379, iam: false, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/set-up.html', resource: { port: 6379, status: 'AVAILABLE', connectionType: 'vpc', credentialsValid: true }, request: { key: 'order-1', value: 'cached result' }, scope: 'VPC endpoint GET/SET on 6379, or GET on the 6380 read-from-replica port; TLS is always on. Public endpoints and IAM auth are excluded.' },
+  keyspaces: { name: 'Keyspaces', actions: ['cassandra:Select', 'cassandra:Modify'], protocol: 'TCP', port: 9142, iam: true, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/keyspaces/latest/devguide/programmatic.endpoints.html', resource: { status: 'ACTIVE' }, request: {}, scope: 'CQL over TLS on 9142 to the regional endpoint (or an interface endpoint) with SigV4 IAM authorization. CQL execution, system-table reads and service-specific credentials are excluded.' },
+  timestream: { name: 'Timestream for InfluxDB', actions: ['Connect'], protocol: 'HTTPS', port: 8086, iam: false, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/ts-influxdb/latest/ts-influxdb-api/API_CreateDbInstance.html', resource: { port: 8086, status: 'AVAILABLE', credentialsValid: true }, request: {}, scope: 'Private InfluxDB API connection (InfluxDB credentials, not IAM). Timestream for LiveAnalytics is closed to new customers and not modeled; writes/queries are excluded.' },
+  redshift_serverless: { name: 'Redshift Serverless', actions: ['Connect'], protocol: 'SQL', port: 5439, iam: false, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-connecting.html', resource: { port: 5439, status: 'AVAILABLE', credentialsValid: true }, request: {}, scope: 'Private workgroup SQL connection; credentials stand for GetCredentials temporary credentials. Public access, Data API and SQL execution are excluded.' },
+  opensearch_db: { name: 'OpenSearch Service', actions: ['es:ESHttpGet', 'es:ESHttpPost'], protocol: 'HTTPS', port: 443, iam: false, privateIam: true, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/opensearch-service/latest/developerguide/vpc.html', resource: { port: 443, accessPolicy: 'iam' }, request: {}, scope: 'VPC domain HTTPS request: security groups plus the domain access policy (open, or IAM evaluated on the caller role). Fine-grained access control, IP policies and public domains are excluded.' },
+  neptune_analytics: { name: 'Neptune Analytics', actions: ['neptune-graph:ReadDataViaQuery', 'neptune-graph:WriteDataViaQuery'], protocol: 'HTTPS', port: 443, iam: true, seedOnCreate: true,
+    source: 'https://docs.aws.amazon.com/neptune-analytics/latest/userguide/gettingStarted-connecting.html', resource: { status: 'AVAILABLE', publicConnectivity: false }, request: {}, scope: 'SigV4-signed graph query authorization. Public connectivity is disabled by default, so callers use the graph private endpoint in their VPC. Query execution is excluded.',
+    routeCheck: (resource, route) => resource.publicConnectivity !== true && route.via !== 'interface-endpoint' ? 'Public connectivity is disabled for this graph (the default); call it through its private endpoint (interface endpoint) in the caller VPC, or enable public connectivity.' : undefined },
+  secrets_manager: { name: 'Secrets Manager', actions: ['secretsmanager:GetSecretValue'], protocol: 'HTTPS', port: 443, iam: true,
+    source: 'https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html', resource: { SecretId: 'training-secret', versions: [{ VersionId: '00000000000000000000000000000001', VersionStages: ['AWSCURRENT'], SecretString: 'synthetic-training-value' }] }, request: {}, scope: 'Synthetic authored secret versions and staging labels. Customer-key dependency requires the caller’s Decrypt and a direct-grant key policy. Rotation/decryption internals and cross-account use excluded.' }
+};
+export const NEW_OPERATION_ONLY = ['neptune', 'redshift', 'kinesis', 'acm', 'kms', 'secrets_manager',
+  'aurora_serverless', 'rds_proxy', 'aurora_dsql', 'documentdb', 'memorydb', 'elasticache_serverless', 'keyspaces', 'timestream', 'redshift_serverless', 'opensearch_db', 'neptune_analytics'];
+export function operationMode(serviceId: string, config?: Record<string, any>) { return !!SERVICE_OPERATIONS[serviceId] && (NEW_OPERATION_ONLY.includes(serviceId) || config?.operationLab !== undefined); }
+export function operationSample(serviceId: string): OperationSettings {
+  const d = SERVICE_OPERATIONS[serviceId];
+  return { action: d.actions[0], resource: structuredClone(d.resource), request: structuredClone(d.request) };
+}

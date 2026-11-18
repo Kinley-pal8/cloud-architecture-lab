@@ -1,5 +1,20 @@
 # CLAUDE.md --- AWS Architecture Lab
 
+## Required shared service behavior workflow
+
+Before service, simulation, connection, reference, lab, or challenge changes, read
+[docs/SERVICE_BEHAVIOR_GOVERNANCE.md](docs/SERVICE_BEHAVIOR_GOVERNANCE.md).
+It defines the shared behavior invariants, ordered improvement plan, required
+verification, and service-by-name implementation workflow. In an established
+service-improvement conversation, a service name requests that workflow: inspect
+existing behavior, create missing necessary specification/implementation/test files,
+integrate with shared engines, and verify overall composition. A filename or model
+registration alone does not establish behavioral support. Record unsupported scope.
+
+Service-by-name requests: Claude Code runs this workflow with `/aws-service <service name>`
+([.claude/skills/aws-service/SKILL.md](.claude/skills/aws-service/SKILL.md)); other agents follow that file's steps.
+
+
 > **Multi-agent handoff:** This project gets worked on by different AI
 > agents/sessions (Claude, ChatGPT, etc.) at different times. Before
 > starting any work, read `docs/HANDOFF.md` for the current live state

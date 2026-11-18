@@ -1,5 +1,6 @@
 export type ServiceCategory =
   | 'Client / Ingress'
+  | 'Third-Party & External'
   | 'Compute'
   | 'Storage'
   | 'Databases'
@@ -113,6 +114,8 @@ export type FlowStatus = 'active' | 'completed' | 'pending' | 'failed' | 'dimmed
 
 export interface ConnectionData extends Record<string, unknown> {
   transport?: 'HTTP' | 'HTTPS' | 'TCP' | 'UDP';
+  /** Explicit destination port; absent values retain the educational protocol abstraction. */
+  destinationPort?: number;
   /** Structural relationships never act as forwarding hops. Legacy edges default to request. */
   relationship?: import('../engine/architecture/relationships.ts').RelationshipKind;
   protocol: ProtocolType;
@@ -187,7 +190,14 @@ export interface SimulationStep {
     failureReason?: string;
     recoveryApplied?: string;
     dependencyCall?: boolean;
+    callId?: string;
+    parentCallId?: string;
+    phase?: 'call' | 'response';
+    /** A logical application response is not proof of reverse packet evaluation. */
+    returnPathEvaluated?: boolean;
     returnsToNodeId?: string;
+    /** Service-operation lab response recorded by engine/serviceOperations/runner.ts. */
+    operationResponse?: unknown;
   };
 }
 
@@ -199,9 +209,21 @@ export interface SimulationScenario {
   startNodeId: string;
   trafficLevel: 'low' | 'normal' | 'high' | 'very_high' | '10x' | '100x';
   simulateFailureCascade?: boolean;
+  /** Subnets with no route table association behave like a standard public/private setup.
+   *  false = they get only the VPC local route (AWS main route table of a new VPC). Default true. */
+  assumeRouteTables?: boolean;
+  /** Simulator convenience: VPCs without a drawn internet gateway, and generated private tables
+   *  without a drawn NAT gateway, behave as if one existed. Drawn gateways always win. Default false. */
+  assumeGateways?: boolean;
 }
 
+export type SimulationResultKind = 'request' | 'configuration-check' | 'authorization-check' | 'workflow';
+export type SimulationOutcome = 'success' | 'failure' | 'denied' | 'unsupported';
+
 export interface SimulationResult {
+  /** Absent on older saved results; those retain request presentation. */
+  kind?: SimulationResultKind;
+  outcome?: SimulationOutcome;
   serviceStates?: Record<string, import('../engine/services/operations.ts').Runtime>;
   scenario: SimulationScenario;
   steps: SimulationStep[];

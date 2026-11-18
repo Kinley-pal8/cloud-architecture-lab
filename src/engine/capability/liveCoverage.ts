@@ -17,6 +17,7 @@
  * `dataTierInteraction.ts`, `vpcEndpoint.ts`, `networkPath.ts` (read in full for this audit).
  */
 export const LIVE_ADAPTER_SERVICE_IDS = [
+  'xray', // xray.ts: explicit API submission only
   'cloudwatch', 'cloudtrail', // managedServices.ts (bounded operation model)
   'waf',                                            // perimeterInspection.ts
   'ec2', 'ecs', 'eks', 'lambda', 'fargate', 'app_runner',  // computeCapacity.ts (COMPUTE_SERVICE_IDS)
@@ -28,7 +29,8 @@ export const LIVE_ADAPTER_SERVICE_IDS = [
   's3_gateway_endpoint', 'privatelink',              // vpcEndpoint.ts
   'internet_gateway',                                // networkPath.ts (IGW attachment check)
   'sns', 'eventbridge', 'step_functions',            // networkPath.ts (MANAGED_EVENT_TARGET_SERVICE_IDS)
-  'user', 'client_ui', 'api_client'                  // networkPath.ts (isPublicOrigin) - request originators
+  'user', 'client_ui', 'api_client',                 // networkPath.ts (isPublicOrigin) - request originators
+  'developer', 'github', 'gitlab', 'bitbucket'       // cicd/gitPush.ts - Git push and CodeConnections source
 ];
 
 /**
@@ -39,6 +41,11 @@ export const LIVE_ADAPTER_SERVICE_IDS = [
  * entry names the test(s) that back it.
  */
 export const REQUEST_SIMULATION_EVIDENCE: Record<string, string> = {
+  xray: 'tests/aws-conformance/observability/xray.test.ts XRAY-PUT-001, XRAY-PARTIAL-001, XRAY-IAM-001, XRAY-UPDATE-001 - bounded root-segment ingestion through live publisher and selected X-Ray entry points; no sampling/query/service-map coverage',
+  codepipeline: 'tests/aws-conformance/devtools/cicd.test.ts CP-RUN-001, CP-STOP-001, CP-IAM-001 - pipeline execution (workflow result, engine/cicd/pipeline.ts); tests/aws-conformance/devtools/connections.test.ts - artifact cardinality and PrimarySource; test/devtools-connections.test.ts - live connection semantics',
+  codecommit: 'tests/aws-conformance/devtools/cicd.test.ts CP-RUN-001 - push starts the connected pipeline (source action)',
+  codebuild: 'tests/aws-conformance/devtools/cicd.test.ts CB-DOCKER-001, CB-VPC-001 - build action within a pipeline execution; tests/aws-conformance/devtools/standalone.test.ts CB-STANDALONE-* - standalone StartBuild; tests/aws-conformance/devtools/connections.test.ts - artifact counts and PrimarySource',
+  codedeploy: 'tests/aws-conformance/devtools/cicd.test.ts CD-CONFIG-001, CD-LIVE-001, CD-AGENT-001, CD-ECS-NLB-001 - deployment action within a pipeline execution; tests/aws-conformance/devtools/standalone.test.ts CD-STANDALONE-* - standalone CreateDeployment',
   cloudwatch: 'test/managed-services.test.ts: live single-period alarm evaluation',
   cloudtrail: 'test/managed-services.test.ts: live audit event selection',
   sns: 'test/managed-services.test.ts: live SNS fanout to permitted queues',
@@ -51,9 +58,9 @@ export const REQUEST_SIMULATION_EVIDENCE: Record<string, string> = {
   nlb: 'tests/aws-conformance/load-balancing/nlb.test.ts SVC-NLB-SUCCESS-001',
   api_gateway: 'test/engine.test.ts; tests/aws-conformance/compute/lambda.test.ts SVC-LAMBDA-SUCCESS-001 (API GW -> Lambda)',
   rds: 'test/engine.test.ts (tests 2-3); tests/aws-conformance/database/rds.test.ts SVC-RDS-SUCCESS-001',
-  dynamodb: 'tests/aws-conformance/database/dynamodb.test.ts SVC-DDB-SUCCESS-001',
+  dynamodb: 'tests/aws-conformance/database/dynamodb.test.ts SVC-DDB-SUCCESS-001; test/dependency-workflow.test.ts bounded live child calls (item data and reverse packets unmodeled)',
   s3: 'tests/aws-conformance/storage/s3.test.ts SVC-S3-SUCCESS-001; networking/subnets-endpoints.test.ts NET-ENDPOINT-001',
-  sqs: 'tests/aws-conformance/messaging/messaging.test.ts SVC-SQS-SUCCESS-001',
+  sqs: 'tests/aws-conformance/messaging/messaging.test.ts SVC-SQS-SUCCESS-001; tests/aws-conformance/messaging/sqs.test.ts SQS-SEND-001, SQS-VPC-001, SQS-ESM-001/002, SQS-DLQ-001 (engine/messaging/sqs.ts)',
   cloudfront: 'tests/aws-conformance/dns/cloudfront.test.ts SVC-CF-CACHE-HIT-001, SVC-CF-CACHE-MISS-001',
   route53: 'tests/aws-conformance/dns/route53.test.ts SVC-R53-SUCCESS-001',
   nat_gateway: 'test/engine.test.ts; test/failure-engine.test.ts; tests/aws-conformance/networking/routing.test.ts NET-NAT-001/002',
@@ -62,7 +69,25 @@ export const REQUEST_SIMULATION_EVIDENCE: Record<string, string> = {
   privatelink: 'test/engine.test.ts (VPC Gateway/Interface Endpoint routing scenarios)',
   user: 'every test that calls runSimulation with a user/client_ui start node (the overwhelming majority of test/engine.test.ts)',
   client_ui: 'shares the same start-node resolution path as "user" in requestSimulator.ts',
-  api_client: 'shares the same start-node resolution path as "user" in requestSimulator.ts'
+  api_client: 'shares the same start-node resolution path as "user" in requestSimulator.ts',
+  aurora: 'tests/aws-conformance/databases/database-operations.test.ts DB-AURORA-OK-001 (opt-in Connect); legacy Multi-AZ request path in test/engine.test.ts',
+  aurora_serverless: 'tests/aws-conformance/databases/database-operations.test.ts DB-AURORA_SERVERLESS-OK-001, DB-ASV2-RESUME-001/002 - auto-pause resume on connect',
+  rds_proxy: 'tests/aws-conformance/databases/database-operations.test.ts DB-PROXY-OK-001 - secret via proxy role, writer target, SG',
+  aurora_dsql: 'tests/aws-conformance/databases/database-operations.test.ts DB-AURORA_DSQL-OK-001, DB-DSQL-IAM-001 - IAM token actions, ACTIVE only',
+  documentdb: 'tests/aws-conformance/databases/database-operations.test.ts DB-DOCUMENTDB-OK-001, DB-E2E-001 - private connect via ALB/EC2 traversal',
+  memorydb: 'tests/aws-conformance/databases/database-operations.test.ts DB-MEMORYDB-OK-001 - GET/SET with ACL credentials',
+  elasticache_serverless: 'tests/aws-conformance/databases/database-operations.test.ts DB-ELASTICACHE_SERVERLESS-OK-001, DB-ECS-SL-READER-002 - 6379/6380, TLS always on',
+  keyspaces: 'tests/aws-conformance/databases/database-operations.test.ts DB-KEYSPACES-OK-001, DB-KEYSPACES-NET-002 - IAM CQL authorization, interface endpoint',
+  timestream: 'tests/aws-conformance/databases/database-operations.test.ts DB-TIMESTREAM-OK-001 - Timestream for InfluxDB connection (LiveAnalytics closed to new customers)',
+  redshift_serverless: 'tests/aws-conformance/databases/database-operations.test.ts DB-REDSHIFT_SERVERLESS-OK-001 - workgroup connect, port ranges',
+  opensearch_db: 'tests/aws-conformance/databases/database-operations.test.ts DB-OPENSEARCH_DB-OK-001, DB-OPENSEARCH-IAM-002 - VPC domain access policy',
+  neptune_analytics: 'tests/aws-conformance/databases/database-operations.test.ts DB-NGA-NET-002/003 - private endpoint or public connectivity',
+  neptune: 'tests/aws-conformance/databases/database-operations.test.ts DB-NEPTUNE-OK-001 - private 8182 connect',
+  dms: 'tests/aws-conformance/databases/database-operations.test.ts DB-DMS-OK-001 - StartReplicationTask full load (workflow, engine/database/dms.ts)',
+  developer: 'tests/aws-conformance/devtools/git-push.test.ts GIT-PUSH-001/002 - git push to CodeCommit (workflow result, engine/cicd/gitPush.ts); repository contents not simulated',
+  github: 'tests/aws-conformance/devtools/git-push.test.ts CONN-SRC-001/005 - push starts a CodeStarSourceConnection pipeline source',
+  gitlab: 'tests/aws-conformance/devtools/git-push.test.ts CONN-SRC-002 - PENDING connection does not trigger (shared provider path with github)',
+  bitbucket: 'tests/aws-conformance/devtools/git-push.test.ts CONN-SRC-006 - push succeeds, DetectChanges=false does not start the pipeline; CONN-SRC-003 PENDING manual-run failure'
 };
 
 /**
@@ -74,13 +99,14 @@ export const REQUEST_SIMULATION_EVIDENCE: Record<string, string> = {
  * `engine/failure/propagation.ts`. That generic mechanism alone does not earn this flag.
  */
 export const FAILURE_SIMULATION_EVIDENCE: Record<string, string> = {
+  codedeploy: 'tests/aws-conformance/devtools/cicd.test.ts CD-LIVE-001 - failed target instances count against the deployment configuration',
   ec2: 'tests/aws-conformance/compute/ec2.test.ts SVC-EC2-SERVICE-FAILURE-001 (503, no failover in front of it)',
   fargate: 'tests/aws-conformance/compute/fargate.test.ts SVC-FARGATE-SERVICE-FAILURE-001',
   lambda: 'tests/aws-conformance/compute/lambda.test.ts SVC-LAMBDA-SERVICE-FAILURE-001',
   alb: 'test/engine.test.ts (test 4); tests/aws-conformance/load-balancing/alb.test.ts SVC-ALB-SERVICE-FAILURE-001 (503 on zero healthy targets)',
   nlb: 'tests/aws-conformance/load-balancing/nlb.test.ts SVC-NLB-SERVICE-FAILURE-001',
   rds: 'tests/aws-conformance/database/rds.test.ts SVC-RDS-SERVICE-FAILURE-001 (Single-AZ, hard failure) and SVC-RDS-MULTIAZ-FAILOVER-001 (Multi-AZ, automatic recovery)',
-  dynamodb: 'tests/aws-conformance/database/dynamodb.test.ts SVC-DDB-SERVICE-FAILURE-001',
+  dynamodb: 'tests/aws-conformance/database/dynamodb.test.ts SVC-DDB-SERVICE-FAILURE-001; test/dependency-workflow.test.ts required/optional live child failure isolation',
   s3: 'tests/aws-conformance/storage/s3.test.ts SVC-S3-SERVICE-FAILURE-001',
   cloudfront: 'tests/aws-conformance/dns/cloudfront.test.ts SVC-CF-CACHE-MISS-001 (origin failure not masked by the cache layer)',
   route53: 'tests/aws-conformance/dns/route53.test.ts SVC-R53-SERVICE-FAILURE-001',

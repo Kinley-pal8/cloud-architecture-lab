@@ -192,7 +192,7 @@ test('3. Send Request: view a successful flow with request path, decision points
   await h.unmount();
 });
 
-test('4. Send Request: view a failed flow with a DENIED trace and a WHY', async () => {
+test('4. Send Request: unavailable targets produce a FAILURE trace and a WHY', async () => {
   const h = await mount();
   await h.act(() => h.api().loadTemplate('highly-available-multiaz'));
 
@@ -208,10 +208,9 @@ test('4. Send Request: view a failed flow with a DENIED trace and a WHY', async 
   assert.strictEqual(simulationResult!.statusCode, 503);
 
   if (requestTrace) {
-    // The trace may legitimately stop at the ALB hop (no further hop is reached once denied) -
-    // what matters is that a denial is explained, not that every reference-template hop appears.
-    assert.strictEqual(requestTrace.final, 'DENIED');
-    assert.ok(requestTrace.why.length > 0, 'a denied request must carry a WHY');
+    // No healthy targets is an availability failure, not an authorization denial.
+    assert.strictEqual(requestTrace.final, 'FAILURE');
+    assert.ok(requestTrace.why.length > 0, 'a failed request must carry a WHY');
   }
 
   await h.unmount();
@@ -1177,4 +1176,384 @@ test('Canvas lab save appears only for loaded labs and exports live edits with l
     await act(async () => root.unmount());
     (window as any).showSaveFilePicker = originalPicker;
   }
+});
+
+test('Real UI analytics sends one screen event under StrictMode and tracks lab simulations without graph data', async () => {
+  const { initializeAnalytics } = await import('../../src/analytics/analytics.ts');
+  const { AnalyticsObserver } = await import('../../src/analytics/AnalyticsObserver.tsx');
+  const savedEvent = Object.getOwnPropertyDescriptor(globalThis, 'Event');
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const savedUmami = (window as any).umami;
+  Object.defineProperty(globalThis, 'Event', { value: dom.window.Event, configurable: true });
+  Object.defineProperty(globalThis, 'localStorage', { value: dom.window.localStorage, configurable: true });
+  localStorage.removeItem('umami.disabled');
+  const sent: { event: string; data: any }[] = [];
+  (window as any).umami = { track: (event: string, data: any) => { sent.push({ event, data }); } };
+  const stop = initializeAnalytics({ production: true, websiteId: 'test-ui', scriptUrl: 'https://analytics.example/script.js', domains: 'localhost' });
+  const root = createRoot(document.getElementById('root')!);
+  const apiRef: { current: Api | null } = { current: null };
+  try {
+    await act(async () => root.render(React.createElement(React.StrictMode, null, React.createElement(ArchitectureProvider, null, React.createElement(Harness, { apiRef }), React.createElement(AnalyticsObserver, { page: 'lab' })))));
+    assert.equal(sent.filter(item => item.event === 'screen_view').length, 1);
+    const reference = COURSE_LABS[0].references[0];
+    await act(async () => apiRef.current!.openLabReference(reference));
+    await act(async () => apiRef.current!.runScenario());
+    assert.equal(sent.filter(item => item.event === 'lab_opened').length, 1);
+    const simulation = sent.find(item => item.event === 'simulation_run')!;
+    assert.equal(simulation.data.lab_id, reference.id);
+    assert.equal(typeof simulation.data.success, 'boolean');
+    assert.equal(simulation.data.nodes, undefined);
+    assert.equal(simulation.data.scenario, undefined);
+    assert.equal(simulation.data.path, undefined);
+    assert.equal(simulation.data.name, undefined);
+  } finally {
+    await act(async () => root.unmount()); stop();
+    (window as any).umami = savedUmami;
+    if (savedEvent) Object.defineProperty(globalThis, 'Event', savedEvent); else delete (globalThis as any).Event;
+    if (savedStorage) Object.defineProperty(globalThis, 'localStorage', savedStorage); else delete (globalThis as any).localStorage;
+  }
+});
+
+test('Recorded check results keep their scope in controls and trace after execution', async () => {
+  const h = await mount(false, false, true);
+  try {
+    const ref = COURSE_LABS.find(lab => lab.number === 10)!.references[0];
+    await h.act(() => h.api().openLabReference(ref));
+    await h.act(() => h.api().runScenario());
+    assert.equal(h.api().simulationResult!.kind, 'configuration-check');
+    assert.equal(h.api().requestTrace!.kind, 'configuration-check');
+    assert.ok(document.body.textContent!.includes('Configuration PASS'));
+    assert.ok(!document.body.textContent!.includes('HTTP 200'));
+    await h.act(() => h.api().setIsPlaying(false));
+    // A check failure is not an authorization denial.
+    const check = ref.configurationChecks![0];
+    await h.act(() => h.api().setNodes(nodes => nodes.filter(node => node.id !== check.nodeId)));
+    await h.act(() => h.api().runScenario());
+    assert.equal(h.api().requestTrace!.final, 'FAILURE');
+    assert.ok(document.body.textContent!.includes('Configuration FAIL'));
+  } finally { await h.unmount(); }
+});
+
+test('Real provider executes equivalent lab and new-design inputs through the same behavior', async () => {
+  const h = await mount();
+  try {
+    const ref = COURSE_LABS[3].references[0];
+    await h.act(() => h.api().openLabReference(ref));
+    await h.act(() => h.api().runScenario());
+    const fromLab = structuredClone(h.api().simulationResult!);
+    await h.act(() => h.api().setIsPlaying(false));
+    // loadTemplate clears the lab context and uses the ordinary design execution path.
+    await h.act(() => h.api().loadTemplate('equivalent-design', {
+      id: 'equivalent-design', name: 'Equivalent design', category: 'Test', difficulty: 'Beginner',
+      description: '', learningOutcome: '', nodes: structuredClone(ref.nodes),
+      edges: structuredClone(ref.edges), scenario: ref.scenario
+    }));
+    assert.equal(h.api().activeLabReference, null);
+    await h.act(() => h.api().runScenario());
+    const direct = h.api().simulationResult!;
+    assert.deepEqual({ ...fromLab, summary: direct.summary }, direct);
+  } finally { await h.unmount(); }
+});
+
+test('Connection inspector exposes destination port; invalid edits are rejected and valid values persist', async () => {
+  const h = await mount(true);
+  const previousAlert = window.alert;
+  const alerts: string[] = [];
+  window.alert = message => { alerts.push(String(message)); };
+  try {
+    await h.act(() => {
+      h.api().setNodes(['source', 'target'].map(id => ({ id, type: 'serviceNode', position: { x: id === 'source' ? 0 : 400, y: 0 }, data: { serviceId: 'ec2', label: id, health: 'healthy', subnet: 'private' } })) as any);
+      h.api().setEdges([{ id: 'port-edge', source: 'source', target: 'target', data: { protocol: 'TCP' } }] as any);
+      h.api().setSelectedNodeId(null);
+      h.api().setSelectedEdgeId('port-edge');
+    });
+    assert.ok(document.querySelector('input[aria-label="Destination port"]'));
+    await h.act(() => h.api().updateEdgeData('port-edge', { destinationPort: 5432 }));
+    assert.equal((document.querySelector('input[aria-label="Destination port"]') as HTMLInputElement).value, '5432');
+    await h.act(() => h.api().updateEdgeData('port-edge', { destinationPort: 65536 }));
+    assert.equal(h.api().edges[0].data!.destinationPort, 5432);
+    assert.match(alerts.at(-1)!, /Destination port/);
+    const saved = h.api().exportDraft();
+    await h.act(() => h.api().importDraft(saved));
+    assert.equal(h.api().edges[0].data!.destinationPort, 5432);
+  } finally { window.alert = previousAlert; await h.unmount(); }
+});
+
+test('Reference loader uses the same deterministic entry-point default as request execution', async () => {
+  const h = await mount();
+  try {
+    const nodes: any[] = ['z-client', 'a-client'].map(id => ({ id, type: 'serviceNode', position: { x: 0, y: 0 }, data: { serviceId: 'user', label: id, health: 'healthy', subnet: 'global' } }));
+    const ref = { id: 'ordered-default', name: 'Default', description: '', learningOutcome: '', category: 'Test', difficulty: 'Beginner' as const, nodes, edges: [] };
+    for (const ordered of [nodes, [...nodes].reverse()]) {
+      await h.act(() => h.api().loadTemplate(ref.id, { ...ref, nodes: ordered }));
+      assert.equal(h.api().scenario.startNodeId, 'a-client');
+      await h.act(() => h.api().runScenario());
+      assert.equal(h.api().simulationResult!.path[0], 'a-client');
+    }
+  } finally { await h.unmount(); }
+});
+
+test('Overview and Config remain tabs while service sections collapse and reset on selection', async () => {
+  const h = await mount(true);
+  const toggle = (title: string) => [...document.querySelectorAll<HTMLButtonElement>('aside button[aria-expanded]')].find(button => button.textContent?.trim() === title)!;
+  const body = (button: HTMLButtonElement) => document.getElementById(button.getAttribute('aria-controls')!)!;
+  try {
+    await h.act(() => h.api().addServiceNode('ec2', { x: 0, y: 0 }));
+    const config = document.querySelector<HTMLButtonElement>('[role=tab][id=inspector-config-tab]')!;
+    assert.equal(config.getAttribute('aria-selected'), 'false');
+    assert.equal(document.getElementById('inspector-overview-panel')!.hidden, false);
+    await h.act(() => config.click());
+    assert.equal(config.getAttribute('aria-selected'), 'true');
+    assert.equal(document.getElementById('inspector-config-panel')!.hidden, false);
+    assert.equal(document.getElementById('inspector-overview-panel')!.hidden, true);
+    assert.equal(toggle('Teaching Notes').getAttribute('aria-expanded'), 'false');
+    const instance = toggle('EC2 instance configuration');
+    assert.ok(instance);
+    assert.equal(body(instance).hidden, true);
+    await h.act(() => instance.click());
+    assert.equal(body(instance).hidden, false);
+    assert.ok(body(instance).textContent?.includes('Instance Type / Size'));
+    await h.act(() => instance.click());
+    assert.equal(body(instance).hidden, true);
+    await h.act(() => h.api().addServiceNode('s3', { x: 600, y: 600 }));
+    assert.equal(document.querySelector('[id=inspector-config-tab]')!.getAttribute('aria-selected'), 'true');
+    assert.ok(toggle('S3 bucket configuration'));
+    assert.ok(!toggle('EC2 instance configuration'));
+    assert.ok(!toggle('Availability zone'));
+    assert.ok(!toggle('Subnet placement'));
+    assert.ok(!toggle('RDS availability'));
+    assert.ok(!document.body.textContent?.includes('Task / Instance Replicas'));
+  } finally { await h.unmount(); }
+});
+
+test('Inspector shows service-owned settings and preserves edits through accordion toggles', async () => {
+  const h = await mount(true);
+  const toggle = (title: string) => [...document.querySelectorAll<HTMLButtonElement>('aside button[aria-expanded]')].find(button => button.textContent?.trim() === title)!;
+  try {
+    await h.act(() => h.api().addServiceNode('rds', { x: 0, y: 0 }));
+    assert.ok(toggle('Database configuration'));
+    assert.ok(toggle('RDS availability'));
+    assert.ok(!toggle('Lambda function configuration'));
+    await h.act(() => h.api().addServiceNode('lambda', { x: 0, y: 0 }));
+    assert.ok(toggle('Lambda function configuration'));
+    assert.ok(!toggle('RDS availability'));
+    assert.ok(!toggle('Availability zone'));
+    await h.act(() => h.api().addServiceNode('ecs', { x: 0, y: 0 }));
+    assert.ok(toggle('ECS service configuration'));
+    assert.ok(!toggle('EC2 instance configuration'));
+    await h.act(() => h.api().addServiceNode('eks', { x: 0, y: 0 }));
+    const id = h.api().selectedNode!.id;
+    await h.act(() => h.api().updateNodeData(id, { subnet: 'private', customConfig: { eks: { kind: 'workload', readyPods: 1, runningPods: 1 } } }));
+    await h.act(() => document.querySelector<HTMLButtonElement>('[id=inspector-config-tab]')!.click());
+    await h.act(() => toggle('EKS cluster and workload').click());
+    const role = document.querySelector<HTMLSelectElement>('[aria-label="EKS resource role"]')!;
+    assert.equal(role.value, 'workload');
+    const selector = document.querySelector<HTMLInputElement>('[aria-label="Service selector"]')!;
+    // Drive React's real input change event rather than writing context directly.
+    await h.act(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(selector, 'updated-app');
+      selector.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    assert.equal(h.api().selectedNode!.data.customConfig!.eks.serviceSelector, 'updated-app');
+    await h.act(() => toggle('EKS cluster and workload').click());
+    await h.act(() => toggle('EKS cluster and workload').click());
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="Service selector"]')!.value, 'updated-app');
+    await h.act(() => h.api().updateNodeData(id, { customConfig: { eks: { kind: 'control-plane' } } }));
+    assert.ok(!toggle('Network identity'));
+    assert.ok(!toggle('Security groups'));
+    assert.equal(document.querySelector('[aria-label="Observed Ready pods"]'), null);
+  } finally { await h.unmount(); }
+});
+
+test('Metadata-only services expose no invented capacity settings; connections and boundaries collapse independently', async () => {
+  const h = await mount(true);
+  const toggle = (title: string) => [...document.querySelectorAll<HTMLButtonElement>('aside button[aria-expanded]')].find(button => button.textContent?.trim() === title)!;
+  try {
+    await h.act(() => h.api().addServiceNode('backup', { x: 0, y: 0 }));
+    assert.match(document.body.textContent!, /No service-specific configuration panel/);
+    assert.ok(!toggle('RDS availability'));
+    assert.ok(!toggle('Availability zone'));
+    await h.act(() => h.api().addBoundaryNode('private_subnet', { x: 0, y: 0 }));
+    const boundary = [...document.querySelectorAll<HTMLButtonElement>('aside button[aria-expanded]')][0];
+    assert.equal(boundary.getAttribute('aria-expanded'), 'false');
+    await h.act(() => boundary.click());
+    assert.equal(boundary.getAttribute('aria-expanded'), 'true');
+    await h.act(() => {
+      h.api().setNodes(['a', 'b'].map(id => ({ id, position: { x: 0, y: 0 }, data: { serviceId: 'ec2', label: id, health: 'healthy', subnet: 'private' } })) as any);
+      h.api().setEdges([{ id: 'link', source: 'a', target: 'b', data: { protocol: 'TCP' } }] as any);
+      h.api().setSelectedNodeId(null); h.api().setSelectedEdgeId('link');
+    });
+    assert.equal(toggle('Connection settings').getAttribute('aria-expanded'), 'false');
+    await h.act(() => toggle('Connection settings').click());
+    assert.ok(document.querySelector('[aria-label="Destination port"]'));
+  } finally { await h.unmount(); }
+});
+
+test('Developer tools: canvas creates executable CI/CD management links and preserves them on reconnect', async () => {
+  const h = await mount();
+  try {
+    for (const id of ['codecommit', 'codepipeline', 'codebuild', 'codedeploy', 'ec2']) {
+      await h.act(() => h.api().addServiceNode(id, { x: 2000, y: 0 }));
+    }
+    const find = (id: string) => h.api().nodes.find(n => n.data.serviceId === id)!;
+    for (const [a, b] of [['codecommit', 'codepipeline'], ['codepipeline', 'codebuild'], ['codebuild', 'codedeploy'], ['codedeploy', 'ec2']]) {
+      await h.act(() => h.api().onConnect({ source: find(a).id, target: find(b).id, sourceHandle: null, targetHandle: null }));
+      const link = h.api().edges.find(e => e.source === find(a).id && e.target === find(b).id)!;
+      assert.ok(link, `${a} -> ${b} is drawable`);
+      assert.equal(link.data?.relationship, 'manages');
+      assert.equal(link.data?.isCriticalDependency, false);
+    }
+    assert.equal(h.api().edges.length, 4);
+    const link = h.api().edges.find(e => e.source === find('codepipeline').id)!;
+    await h.act(() => h.api().onReconnect(link, { source: find('codepipeline').id, target: find('codedeploy').id, sourceHandle: null, targetHandle: null }));
+    assert.equal(h.api().edges.find(e => e.id === link.id)?.target, find('codedeploy').id);
+  } finally { await h.unmount(); }
+});
+
+test('Third-party actors: drawn developer -> CodeCommit link pushes from the inspector; IAM preset denies', async () => {
+  const h = await mount(true);
+  const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === text)!;
+  try {
+    await h.act(() => h.api().addServiceNode('codecommit', { x: 2300, y: 0 }));
+    const repo = h.api().selectedNode!;
+    await h.act(() => h.api().addServiceNode('developer', { x: 2000, y: 0 }));
+    const developer = h.api().selectedNode!;
+    assert.equal(developer.data.subnet, 'global');
+    assert.equal(developer.data.category, 'Third-Party & External');
+    await h.act(() => h.api().onConnect({ source: developer.id, target: repo.id, sourceHandle: null, targetHandle: null }));
+    assert.equal(h.api().edges.find(e => e.source === developer.id)?.data?.relationship, 'manages');
+    await h.act(() => button('Config').click());
+    await h.act(() => button('Git push').click());
+    await h.act(() => button('git push').click());
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.kind, 'workflow');
+    assert.equal(h.api().simulationResult?.success, true, h.api().simulationResult?.summary);
+    const select = [...document.querySelectorAll<HTMLSelectElement>('select')].find(s => [...s.options].some(o => o.value === 'read-only'))!;
+    await h.act(() => { select.value = 'read-only'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+    assert.equal(h.api().nodes.find(n => n.id === developer.id)?.data.customConfig?.iamPolicy, 'read-only');
+    await h.act(() => button('git push').click());
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.statusCode, 403);
+  } finally { await h.unmount(); }
+});
+
+test('Databases: seeded DocumentDB runs from a drawn EC2 caller; DMS task runs from the inspector and honors dms-vpc-role', async () => {
+  const h = await mount(true);
+  const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === text)!;
+  try {
+    await h.act(() => { h.api().addBoundaryNode('vpc', { x: 0, y: 0 }, { width: 1400, height: 800 }); });
+    await h.act(() => { h.api().addBoundaryNode('private_subnet', { x: 40, y: 60 }, { width: 1300, height: 700 }); });
+    await h.act(() => h.api().addServiceNode('ec2', { x: 100, y: 120 }, { subnet: 'private' }));
+    const app = h.api().selectedNode!;
+    await h.act(() => h.api().addServiceNode('documentdb', { x: 500, y: 120 }, { subnet: 'private' }));
+    const docdb = h.api().selectedNode!;
+    assert.equal(docdb.data.customConfig?.operationLab?.action, 'Connect', 'example is seeded and visible');
+    await h.act(() => h.api().onConnect({ source: app.id, target: docdb.id, sourceHandle: null, targetHandle: null }));
+    assert.equal(h.api().edges.find(e => e.target === docdb.id)?.data?.protocol, 'TCP');
+    await h.act(() => h.api().runFromNode(app.id));
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.success, true, h.api().simulationResult?.summary);
+
+    await h.act(() => h.api().addServiceNode('rds', { x: 100, y: 450 }, { subnet: 'private' }));
+    const source = h.api().selectedNode!;
+    await h.act(() => h.api().addServiceNode('aurora_serverless', { x: 900, y: 450 }, { subnet: 'private' }));
+    const target = h.api().selectedNode!;
+    await h.act(() => h.api().addServiceNode('dms', { x: 500, y: 450 }, { subnet: 'private' }));
+    const dms = h.api().selectedNode!;
+    await h.act(() => h.api().onConnect({ source: source.id, target: dms.id, sourceHandle: null, targetHandle: null }));
+    await h.act(() => h.api().onConnect({ source: dms.id, target: target.id, sourceHandle: null, targetHandle: null }));
+    assert.equal(h.api().edges.filter(e => [e.source, e.target].includes(dms.id) && e.data?.relationship === 'manages').length, 2);
+    await h.act(() => button('Config').click());
+    await h.act(() => button('Replication task').click());
+    await h.act(() => button('Start replication task').click());
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.kind, 'workflow');
+    assert.equal(h.api().simulationResult?.success, true, h.api().simulationResult?.summary);
+    const role = [...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(i => i.parentElement?.textContent?.includes('dms-vpc-role'))!;
+    await h.act(() => role.click());
+    assert.equal(h.api().nodes.find(n => n.id === dms.id)?.data.customConfig?.dmsVpcRole, false);
+    await h.act(() => button('Start replication task').click());
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.statusCode, 403);
+  } finally { await h.unmount(); }
+});
+
+test('Developer tools: Start build and Create deployment execute selected services without changing the saved request start', async () => {
+  const h = await mount(true);
+  const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === text)!;
+  const serviceRole = (principal: string): any => ({ id: principal, trustPolicy: { id: 't', kind: 'trust', statements: [{ effect: 'Allow', actions: ['sts:AssumeRole'], principals: [principal], resources: ['*'] }] }, identityPolicies: [{ id: 'p', kind: 'identity', statements: [{ effect: 'Allow', actions: ['*'], resources: ['*'] }] }] });
+  try {
+    await h.act(() => h.api().addServiceNode('codebuild', { x: 2000, y: 0 }));
+    const build = h.api().selectedNode!;
+    await h.act(() => {
+      h.api().updateNodeData(build.id, { iamRole: serviceRole('codebuild.amazonaws.com'), customConfig: { sourceType: 'NO_SOURCE', buildspec: 'version: 0.2\nphases:\n  build:\n    commands: [echo hello]' } });
+      h.api().setScenario(s => ({ ...s, startNodeId: 'saved-start' }));
+    });
+    await h.act(() => button('Config').click());
+    await h.act(() => button('Build project').click());
+    assert.ok(button('Start build'));
+    await h.act(() => button('Start build').click());
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.kind, 'workflow');
+    assert.equal(h.api().simulationResult?.success, true, h.api().simulationResult?.summary);
+    assert.equal(h.api().scenario.startNodeId, 'saved-start');
+    await h.act(() => h.api().addServiceNode('codedeploy', { x: 2300, y: 0 }));
+    const deploy = h.api().selectedNode!;
+    await h.act(() => h.api().updateNodeData(deploy.id, { iamRole: serviceRole('codedeploy.amazonaws.com') }));
+    await h.act(() => button('Config').click());
+    await h.act(() => button('Deployment group').click());
+    assert.ok(button('Create deployment'));
+    await h.act(() => button('Create deployment').click());
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.kind, 'workflow');
+    assert.equal(h.api().simulationResult?.statusCode, 400);
+    assert.match(h.api().simulationResult!.summary, /revision bucket/);
+    assert.ok(!h.api().simulationResult?.steps.some(s => s.action === 'Unsupported service execution'));
+    assert.equal(h.api().scenario.startNodeId, 'saved-start');
+  } finally { await h.unmount(); }
+});
+
+test('X-Ray: draw/reconnect publisher links, submit from the inspector, retain configuration/runtime through draft reload', async () => {
+  const { buildRole } = await import('../../src/engine/iam/roleBuilder.ts');
+  const h = await mount(true);
+  const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === text)!;
+  try {
+    await h.act(() => h.api().addServiceNode('lambda', { x: 2000, y: 0 }));
+    const publisher = h.api().selectedNode!;
+    await h.act(() => h.api().addServiceNode('lambda', { x: 2400, y: 0 }));
+    const other = h.api().selectedNode!;
+    await h.act(() => h.api().addServiceNode('xray', { x: 2800, y: 0 }));
+    const xray = h.api().selectedNode!;
+    await h.act(() => h.api().onConnect({ source: publisher.id, target: xray.id, sourceHandle: null, targetHandle: null }));
+    let link = h.api().edges.find(e => e.target === xray.id)!;
+    assert.ok(link, 'the supported HTTPS connection can be drawn');
+    assert.equal(link.data?.protocol, 'HTTPS');
+    await h.act(() => h.api().onReconnect(link, { source: other.id, target: xray.id, sourceHandle: null, targetHandle: null }));
+    link = h.api().edges.find(e => e.id === link.id)!;
+    assert.equal(link.source, other.id);
+    await h.act(() => {
+      h.api().updateNodeData(other.id, { iamRole: buildRole('lambda', 'xray-writer', [{ target: xray, actions: ['xray:PutTraceSegments'] }]) });
+      h.api().setScenario(s => ({ ...s, startNodeId: publisher.id }));
+    });
+    await h.act(() => button('Config').click());
+    const accordion = button('X-Ray trace ingestion');
+    assert.equal(accordion.getAttribute('aria-expanded'), 'false');
+    await h.act(() => accordion.click());
+    await h.act(() => button('Load sample segment').click());
+    const sample = h.api().nodes.find(n => n.id === xray.id)!.data.customConfig!.segmentDocuments;
+    await h.act(() => button('Submit trace segments').click());
+    await h.act(() => h.api().setIsPlaying(false));
+    assert.equal(h.api().simulationResult?.statusCode, 200, h.api().simulationResult?.summary);
+    assert.match(document.querySelector('[aria-label="X-Ray ingestion state"]')!.textContent!, /Stored segments: 1/);
+    assert.equal(h.api().scenario.startNodeId, publisher.id, 'run action preserves saved request start');
+    await h.act(() => button('X-Ray trace ingestion').click());
+    await h.act(() => button('X-Ray trace ingestion').click());
+    assert.equal(h.api().nodes.find(n => n.id === xray.id)!.data.customConfig!.segmentDocuments, sample);
+    const exported = h.api().exportDraft();
+    await h.act(() => h.api().importDraft(exported));
+    const restored = h.api().nodes.find(n => n.id === xray.id)!;
+    assert.equal(restored.data.customConfig!.segmentDocuments, sample);
+    assert.equal(restored.data.customConfig!.serviceRuntime.records.length, 1);
+    assert.equal(h.api().edges.find(e => e.id === link.id)?.source, other.id);
+  } finally { await h.unmount(); }
 });
