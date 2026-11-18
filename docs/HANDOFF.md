@@ -436,9 +436,9 @@ tests pass and `npm run build` passes:
   its `eks-workload` node: the scenario's `startNodeId`, its description ("Start Send Request at
   Application Service") and `test/eks-reference.test.ts` all needed it, so `main` CI was red (2 failing
   tests) and in the app the request silently fell back to the admin node, so the readiness/selector
-  503 lesson could not be simulated. Re-added it in private subnet 2 (x780,y1150), modelled on
-  `alpha-eks-workload` in the multi-cluster reference (clusterName `eks-architecture`, 3 Ready pods).
-  Also normalised one mis-indented line in that JSON.
+  503 lesson could not be simulated. Upstream (norbutlepcha25/main) independently re-added the same
+  node in private subnet 1; merging both produced a duplicate `eks-workload` id ("Invalid or
+  duplicate reference node"), so on 2026-11-19 the file was reset to upstream's version.
 - **Repo cleanup** — removed committed `dist.zip`, `aws-architecture-lab-labs.zip`,
   `aws-architecture-lab-labs-1-13.zip` (stale 2026-09-21 copies of the built app, unreferenced);
   `.gitignore` now ignores root `/*.zip`.
